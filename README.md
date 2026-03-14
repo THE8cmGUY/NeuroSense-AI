@@ -1,0 +1,7 @@
+- Added ward-dashboard.html: Multi-incubator NICU ward monitoring page
+- Dynamic Firebase auto-detection for any number of ESP32 devices
+- Real-time temp/humidity monitoring for all incubators simultaneously
+- AI-based temperature prediction with overheat/hypothermia alerts
+- Smart alert system with critical/warning/normal classification
+- Updated ml_backend.py: Multi-bay LSTM predictions support
+- Fixed Firebase database URL and sensor key mappin
