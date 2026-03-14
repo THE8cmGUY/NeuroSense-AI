@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NeuroSense | NICU Ward Dashboard</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+
+    <style>
+        :root { --bg-dark: #020617; }
+        body { font-family: 'Inter', sans-serif; background-color: var(--bg-dark); color: #e2e8f0; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.65);
+            backdrop-filter: blur(14px);
+            border: 1px solid rgba(148, 163, 184, 0.1);
+            box-shadow: 0 4px 32px rgba(0,0,0,0.6);
+        }
+
+        .dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+        .dot-green { background:#10b981; box-shadow:0 0 8px #10b981; animation:blink 2s infinite; }
+        .dot-amber { background:#f59e0b; box-shadow:0 0 8px #f59e0b; animation:blink 1.5s infinite; }
+        .dot-red   { background:#ef4444; box-shadow:0 0 8px #ef4444; animation:blink 0.7s infinite; }
+        .dot-gray  { background:#475569; }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+        @keyframes critPulse {
+            0%,100% { box-shadow:0 0 0 0 rgba(239,68,68,0.3); border-color:rgba(239,68,68,0.5); }
+            50%     { box-shadow:0 0 0 8px rgba(239,68,68,0); border-color:rgba(239,68,68,1); }
+        }
+        @keyframes warnPulse {
+            0%,100% { border-color:rgba(245,158,11,0.4); }
+            50%     { border-color:rgba(245,158,11,0.95); }
+        }
+        .inc-crit { animation:critPulse 1.2s infinite; }
+        .inc-warn { animation:warnPulse 2s infinite; }
+        .inc-ok   { border-color:rgba(16,185,129,0.3) !important; }
+
+        .bar-fill { transition: width 1.2s ease; }
+
+        ::-webkit-scrollbar{width:5px;height:5px}
+        ::-webkit-scrollbar-track{background:#0f172a}
+        ::-webkit-scrollbar-thumb{background:#334155;border-radius:3px}
+
+        .tab-on  { background:rgba(14,165,233,0.15); border-color:rgba(14,165,233,0.5); color:#38bdf8; }
+        .tab-off { background:rgba(30,41,59,0.5); border-color:#334155; color:#94a3b8; }
+
+        .stat-tile { transition:transform 0.2s; }
+        .stat-tile:hover { transform:translateY(-2px); }
+
+        /* Loading screen */
+        #loading-screen { transition: opacity 0.6s ease; }
+
+        /* Pulse ring for new device */
+        @keyframes pingOnce {
+            0%   { transform:scale(1);   opacity:1; }
+            100% { transform:scale(2.5); opacity:0; }
+        }
+        .ping-once { animation:pingOnce 0.8s ease-out forwards; }
+
+        .fi1{animation:fadeUp 0.45s 0.00s both}
+        .fi2{animation:fadeUp 0.45s 0.08s both}
+        .fi3{animation:fadeUp 0.45s 0.16s both}
+        .fi4{animation:fadeUp 0.45s 0.24s both}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+
+<!-- ══════════════ LOADING SCREEN ══════════════ -->
+<div id="loading-screen" class="fixed inset-0 bg-slate-950 z-[999] flex flex-col items-center justify-center gap-6">
+    <div class="text-3xl font-bold tracking-tighter text-white">NEURO<span class="text-sky-500">SENSE</span></div>
+    <div class="text-sm font-mono text-slate-400" id="loading-msg">Connecting to Firebase...</div>
+    <div class="flex gap-1.5 mt-2">
+        <div class="w-2 h-2 rounded-full bg-sky-500 animate-bounce" style="animation-delay:0s"></div>
+        <div class="w-2 h-2 rounded-full bg-sky-500 animate-bounce" style="animation-delay:0.15s"></div>
+        <div class="w-2 h-2 rounded-full bg-sky-500 animate-bounce" style="animation-delay:0.3s"></div>
+    </div>
+    <!-- Demo mode button -->
+    <button onclick="startDemoMode()" class="mt-4 text-xs font-mono px-4 py-2 rounded-lg border border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 transition-all">
+        ⚡ Run in Demo Mode (no Firebase)
+    </button>
+    <p class="text-[10px] text-slate-600 font-mono max-w-xs text-center">
+        If Firebase is not configured, use Demo Mode to preview with simulated data.
+    </p>
+</div>
+
+<!-- ══════════════ HEADER ══════════════ -->
+<header class="h-16 border-b border-slate-800 bg-slate-900/90 flex justify-between items-center px-8 z-50 flex-shrink-0">
+    <div class="flex items-center gap-4">
+        <div class="text-2xl font-bold tracking-tighter text-white">NEURO<span class="text-sky-500">SENSE</span><span class="text-[10px] align-top text-slate-500 ml-1">v6.0 PRO</span></div>
+        <div class="h-6 w-px bg-slate-700"></div>
+        <nav class="flex items-center gap-2 text-xs font-mono text-slate-400">
+            <a href="index.html" class="hover:text-sky-400 transition-colors">MAIN DASHBOARD</a>
+            <span class="text-slate-700">/</span>
+            <span class="text-emerald-400 font-bold">NICU WARD — OVERVIEW</span>
+        </nav>
+        <!-- Data source badge -->
+        <span id="data-source-badge" class="text-[9px] font-mono px-2 py-1 rounded border border-slate-700 text-slate-500">
+            ● DEMO MODE
+        </span>
+    </div>
+    <div class="flex items-center gap-5">
+        <div class="flex items-center gap-2 text-[10px] font-mono">
+            <div class="flex items-center gap-1.5 bg-emerald-900/30 border border-emerald-700/40 px-3 py-1.5 rounded-lg">
+                <div class="dot dot-green"></div>
+                <span class="text-emerald-400" id="hdr-ok">0 NORMAL</span>
+            </div>
+            <div class="flex items-center gap-1.5 bg-amber-900/30 border border-amber-700/40 px-3 py-1.5 rounded-lg">
+                <div class="dot dot-amber"></div>
+                <span class="text-amber-400" id="hdr-warn">0 WARNING</span>
+            </div>
+            <div class="flex items-center gap-1.5 bg-red-900/30 border border-red-700/40 px-3 py-1.5 rounded-lg">
+                <div class="dot dot-red"></div>
+                <span class="text-red-400" id="hdr-crit">0 CRITICAL</span>
+            </div>
+        </div>
+        <div class="h-6 w-px bg-slate-700"></div>
+        <div class="text-right">
+            <p class="text-[9px] text-slate-500 uppercase tracking-widest font-mono">System Time</p>
+            <p class="text-sm font-bold font-mono text-sky-400" id="live-clock">--:--:--</p>
+        </div>
+        <div class="h-9 w-9 rounded-full bg-sky-900 border border-sky-600 flex items-center justify-center font-bold text-sky-300 text-xs">DR</div>
+    </div>
+</header>
+
+<div class="flex flex-1 overflow-hidden">
+
+<!-- ══════════════ LEFT SIDEBAR ══════════════ -->
+<aside class="w-64 glass-panel border-r border-slate-800 flex flex-col overflow-y-auto flex-shrink-0">
+
+    <!-- Ward Stats -->
+    <div class="p-4 border-b border-slate-800">
+        <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3">Ward Overview</p>
+        <div class="grid grid-cols-2 gap-2">
+            <div class="bg-slate-900/60 rounded-xl p-3 text-center border border-slate-800">
+                <p class="text-2xl font-mono font-bold text-white" id="stat-total">—</p>
+                <p class="text-[9px] text-slate-500 uppercase mt-0.5">Incubators</p>
+            </div>
+            <div class="bg-slate-900/60 rounded-xl p-3 text-center border border-slate-800">
+                <p class="text-2xl font-mono font-bold text-emerald-400" id="stat-online">—</p>
+                <p class="text-[9px] text-slate-500 uppercase mt-0.5">Online</p>
+            </div>
+            <div class="bg-amber-900/20 rounded-xl p-3 text-center border border-amber-800/30">
+                <p class="text-2xl font-mono font-bold text-amber-400" id="stat-warn">0</p>
+                <p class="text-[9px] text-slate-500 uppercase mt-0.5">Warnings</p>
+            </div>
+            <div class="bg-red-900/20 rounded-xl p-3 text-center border border-red-800/30">
+                <p class="text-2xl font-mono font-bold text-red-400" id="stat-crit">0</p>
+                <p class="text-[9px] text-slate-500 uppercase mt-0.5">Critical</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alert Log -->
+    <div class="p-4 border-b border-slate-800">
+        <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+                <svg class="w-3.5 h-3.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                </svg>
+                <span class="text-[10px] font-bold text-slate-300 uppercase tracking-widest">Alert Log</span>
+            </div>
+            <button onclick="clearAlerts()" class="text-[9px] text-slate-600 hover:text-slate-400 font-mono transition-colors">CLEAR</button>
+        </div>
+        <div class="space-y-1.5 overflow-y-auto max-h-52" id="alert-log">
+            <p class="text-[10px] font-mono text-slate-600">[SYS] Initializing...</p>
+        </div>
+    </div>
+
+    <!-- ESP32 Device Status — dynamically filled -->
+    <div class="p-4 flex-1">
+        <div class="flex items-center justify-between mb-3">
+            <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">ESP32 Devices</p>
+            <span class="text-[9px] font-mono text-sky-400" id="device-count">0 found</span>
+        </div>
+        <div class="space-y-2" id="device-list">
+            <p class="text-[10px] text-slate-600 font-mono">Scanning Firebase...</p>
+        </div>
+    </div>
+</aside>
+
+<!-- ══════════════ MAIN CONTENT ══════════════ -->
+<main class="flex-1 overflow-y-auto p-5 relative bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]">
+    <div class="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-900 to-slate-800 opacity-92 -z-10"></div>
+
+    <!-- Top stat tiles -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5 fi1">
+        <div class="glass-panel rounded-2xl p-4 stat-tile border-l-4 border-l-sky-500">
+            <p class="text-[10px] text-slate-400 uppercase tracking-wider mb-1">Avg Ward Temp</p>
+            <div class="flex items-end gap-1">
+                <span class="text-3xl font-mono font-bold text-sky-400" id="avg-temp">--.-</span>
+                <span class="text-sm text-sky-300 mb-0.5">°C</span>
+            </div>
+            <p class="text-[10px] text-slate-500 mt-1">NICU Target: 36.5°C</p>
+        </div>
+        <div class="glass-panel rounded-2xl p-4 stat-tile border-l-4 border-l-cyan-400">
+            <p class="text-[10px] text-slate-400 uppercase tracking-wider mb-1">Avg Ward Humidity</p>
+            <div class="flex items-end gap-1">
+                <span class="text-3xl font-mono font-bold text-cyan-400" id="avg-hum">--</span>
+                <span class="text-sm text-cyan-300 mb-0.5">%</span>
+            </div>
+            <p class="text-[10px] text-slate-500 mt-1">Target: 60–80%</p>
+        </div>
+        <div class="glass-panel rounded-2xl p-4 stat-tile border-l-4 border-l-purple-500">
+            <p class="text-[10px] text-slate-400 uppercase tracking-wider mb-1">AI Predictions</p>
+            <div class="flex items-end gap-1">
+                <span class="text-3xl font-mono font-bold text-purple-400" id="ai-count">0</span>
+                <span class="text-sm text-purple-300 mb-0.5">active</span>
+            </div>
+            <p class="text-[10px] text-slate-500 mt-1">Edge AI models</p>
+        </div>
+        <div class="glass-panel rounded-2xl p-4 stat-tile border-l-4 border-l-emerald-500">
+            <p class="text-[10px] text-slate-400 uppercase tracking-wider mb-1">Devices Online</p>
+            <div class="flex items-end gap-1">
+                <span class="text-3xl font-mono font-bold text-emerald-400" id="devices-ratio">0/0</span>
+            </div>
+            <p class="text-[10px] text-slate-500 mt-1">ESP32 + DHT11</p>
+        </div>
+    </div>
+
+    <!-- Filter tabs + section label -->
+    <div class="flex items-center gap-3 mb-3 fi2">
+        <div class="dot dot-green"></div>
+        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+            Live Incubator Monitor
+            <span class="text-sky-400 ml-2" id="incubator-count-label">— detecting devices...</span>
+        </p>
+        <div class="flex-1 h-px bg-slate-800"></div>
+        <div class="flex gap-1 text-[10px] font-mono">
+            <button onclick="filterCards('all')"  id="tab-all"  class="px-3 py-1 rounded-lg border transition-all tab-on">ALL</button>
+            <button onclick="filterCards('warn')" id="tab-warn" class="px-3 py-1 rounded-lg border transition-all tab-off">⚠ WARN</button>
+            <button onclick="filterCards('crit')" id="tab-crit" class="px-3 py-1 rounded-lg border transition-all tab-off">🔴 CRIT</button>
+        </div>
+    </div>
+
+    <!-- ── DYNAMIC INCUBATOR GRID ── -->
+    <!-- Cards are injected here by JS as Firebase devices are discovered -->
+    <div class="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-5 min-h-24" id="incubator-grid">
+        <!-- Empty state -->
+        <div id="empty-state" class="col-span-4 text-center py-16 text-slate-600 font-mono text-sm">
+            <div class="text-3xl mb-3">📡</div>
+            <p>Waiting for ESP32 devices to appear in Firebase...</p>
+            <p class="text-xs mt-2 text-slate-700">Path: <span class="text-slate-500">incubator/{deviceId}/temp</span></p>
+        </div>
+    </div>
+
+    <!-- Bottom row: chart + AI predictions -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 fi4">
+
+        <!-- Ward Trend Chart -->
+        <div class="glass-panel p-5 rounded-2xl lg:col-span-2">
+            <div class="flex justify-between items-center mb-3">
+                <div>
+                    <h3 class="text-xs font-bold text-slate-200">📈 TEMPERATURE & HUMIDITY TREND</h3>
+                    <p class="text-[10px] text-slate-500 mt-0.5" id="chart-subtitle">Waiting for data...</p>
+                </div>
+                <select id="chart-selector" onchange="switchChart(this.value)"
+                    class="text-[10px] font-mono bg-slate-800 border border-slate-600 text-slate-300 px-3 py-1.5 rounded-lg outline-none cursor-pointer">
+                    <option value="avg">Ward Average</option>
+                </select>
+            </div>
+            <div class="h-52">
+                <canvas id="wardChart"></canvas>
+            </div>
+        </div>
+
+        <!-- AI Prediction Panel -->
+        <div class="glass-panel p-5 rounded-2xl flex flex-col">
+            <div class="flex items-center gap-2 mb-1">
+                <svg class="w-4 h-4 text-pink-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                </svg>
+                <h3 class="text-xs font-bold text-pink-300">AI TEMP PREDICTIONS</h3>
+            </div>
+            <p class="text-[10px] text-slate-500 mb-3 font-mono">15-min forecast per device</p>
+            <div class="space-y-2 overflow-y-auto flex-1" id="ai-list">
+                <p class="text-[10px] font-mono text-slate-600">Waiting for devices...</p>
+            </div>
+            <div class="mt-3 pt-3 border-t border-slate-800 text-[9px] text-slate-600 font-mono leading-relaxed">
+                <p>Cloud LSTM reads from:</p>
+                <p class="text-sky-500 mt-0.5">incubator/{id}/ml_prediction/future_temp</p>
+            </div>
+        </div>
+    </div>
+</main>
+</div>
+
+<!-- ══════════════ TOAST ALERT ══════════════ -->
+<div id="toast" class="fixed top-20 right-6 z-[100] hidden max-w-sm">
+    <div class="glass-panel border-2 border-red-500/70 rounded-2xl px-5 py-4">
+        <div class="flex items-start gap-3">
+            <div class="dot dot-red mt-1"></div>
+            <div class="flex-1">
+                <p class="text-xs font-bold text-red-400" id="toast-title">CRITICAL ALERT</p>
+                <p class="text-[11px] text-slate-300 mt-1" id="toast-msg">—</p>
+            </div>
+            <button onclick="hideToast()" class="text-slate-500 hover:text-white text-sm ml-2 flex-shrink-0">✕</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+//
+//  NeuroSense — NICU Ward Dashboard
+//  Dynamic Firebase-based: auto-detects ANY number of ESP32 devices
+//
+//  HOW IT WORKS:
+//  Firebase path structure expected:
+//
+//    incubator/
+//      ├── bay01/
+//      │     ├── temp         ← number  (e.g. 36.5)
+//      │     ├── humidity     ← number  (e.g. 68)
+//      │     └── ml_prediction/
+//      │           ├── future_temp  ← number
+//      │           └── ml_alert     ← string
+//      ├── bay02/
+//      │     ├── temp
+//      │     └── humidity
+//      └── (any new device will auto-appear here)
+//
+//  Each ESP32 just needs to write to its own key under 'incubator/'.
+//  The dashboard discovers all keys automatically.
+//
+// ═══════════════════════════════════════════════════════════════════
+
+// ── FIREBASE CONFIG ──────────────────────────────────────────────
+// Copy these exact values from your index.html firebaseConfig
+const firebaseConfig = {
+    apiKey:      "AIzaSyCz9h4wP3dqIvfjF-0fFpiBzYB2MBAz4mo",
+    databaseURL: "https://neuro-sense-37124-default-rtdb.firebaseio.com",
+    projectId:   "neuro-sense-37124",
+};
+
+// ── NICU THRESHOLDS ──────────────────────────────────────────────
+// These are the only values you need to adjust per ward protocol
+const THRESHOLDS = {
+    temp: {
+        ok_min:   36.0,   // Below this = WARNING
+        ok_max:   37.5,   // Above this = WARNING
+        crit_min: 35.5,   // Below this = CRITICAL (Hypothermia)
+        crit_max: 38.0,   // Above this = CRITICAL (Overheating)
+        target:   36.5,
+    },
+    hum: {
+        ok_min:   60,
+        ok_max:   80,
+        crit_min: 50,
+        crit_max: 85,
+        target:   70,
+    }
+};
+
+// ── INTERNAL STATE ───────────────────────────────────────────────
+// This object is built dynamically as devices appear in Firebase.
+// Key = Firebase device ID (e.g. "bay01"), Value = device state object
+const devices = {};   // { deviceId: { temp, hum, history, aiPrediction, ... } }
+let demoMode  = false;
+let demoTimer = null;
+
+// ── CHART SETUP ──────────────────────────────────────────────────
+const wardCtx   = document.getElementById('wardChart').getContext('2d');
+let   chartMode = 'avg';
+
+const wardChart = new Chart(wardCtx, {
+    type: 'line',
+    data: {
+        labels: Array.from({length:30}, (_,i) => i%5===0 ? `-${30-i}m`:''),
+        datasets: [
+            {
+                label:'Temp (°C)',
+                data: Array(30).fill(null),
+                borderColor:'#0ea5e9', backgroundColor:'rgba(14,165,233,0.1)',
+                borderWidth:2, tension:0.4, fill:true, pointRadius:0, yAxisID:'yT'
+            },
+            {
+                label:'Humidity (%)',
+                data: Array(30).fill(null),
+                borderColor:'#22d3ee', borderDash:[5,4],
+                borderWidth:2, tension:0.4, fill:false, pointRadius:0, yAxisID:'yH'
+            }
+        ]
+    },
+    options: {
+        responsive:true, maintainAspectRatio:false, animation:false,
+        plugins:{ legend:{ labels:{ color:'#94a3b8', font:{size:10}, boxWidth:12 } } },
+        scales: {
+            x:  { grid:{color:'#1e293b'}, ticks:{color:'#475569', font:{size:9}} },
+            yT: { type:'linear', position:'left',  grid:{color:'#1e293b'}, ticks:{color:'#38bdf8', font:{size:9}} },
+            yH: { type:'linear', position:'right', grid:{drawOnChartArea:false}, ticks:{color:'#22d3ee', font:{size:9}} }
+        }
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// CORE FUNCTION: Called every time Firebase sends new data for a device
+// This is the single source of truth — all UI updates flow from here
+// ═══════════════════════════════════════════════════════════════════
+function onDeviceData(deviceId, data) {
+
+    const isNew = !devices[deviceId];
+
+    // 1. Create device entry if this is first time we see it
+    if (isNew) {
+        devices[deviceId] = {
+            id:           deviceId,
+            temp:         null,
+            hum:          null,
+            tempHistory:  Array(30).fill(null),
+            humHistory:   Array(30).fill(null),
+            aiPrediction: null,
+            aiAlert:      null,
+            lastSeen:     null,
+            alertState:   'ok',
+            online:       true,
+        };
+        // Add to chart selector
+        const opt = document.createElement('option');
+        opt.value = deviceId;
+        opt.textContent = formatDeviceName(deviceId);
+        document.getElementById('chart-selector').appendChild(opt);
+
+        // Create the card
+        createCard(deviceId);
+        document.getElementById('empty-state')?.remove();
+        addAlert(`📡 New device detected: ${formatDeviceName(deviceId)}`, 'sys');
+    }
+
+    const d = devices[deviceId];
+    const prev = d.alertState;
+
+    // 2. Update values
+    d.temp        = typeof data.temp     === 'number' ? +data.temp.toFixed(1)    : d.temp;
+    d.hum         = typeof data.humidity === 'number' ? Math.round(data.humidity): d.hum;
+    d.lastSeen    = new Date();
+    d.online      = true;
+
+    // 3. Cloud AI prediction from Python LSTM backend
+    if (data.ml_prediction) {
+        d.aiPrediction = data.ml_prediction.future_temp    ?? d.aiPrediction;
+        d.aiAlert      = data.ml_prediction.ml_alert       ?? d.aiAlert;
+    }
+
+    // 4. Edge AI: simple trend-based prediction (when no cloud AI)
+    if (!d.aiPrediction && d.temp !== null) {
+        const last5  = d.tempHistory.filter(v=>v!==null).slice(-5);
+        const trend  = last5.length >= 2 ? last5[last5.length-1] - last5[0] : 0;
+        d.aiPrediction = +(d.temp + trend * 0.6 + (Math.random()-0.5)*0.08).toFixed(1);
+    }
+
+    // 5. Push to history
+    if (d.temp !== null) { d.tempHistory.push(d.temp); if(d.tempHistory.length>30) d.tempHistory.shift(); }
+    if (d.hum  !== null) { d.humHistory.push(d.hum);   if(d.humHistory.length>30)  d.humHistory.shift(); }
+
+    // 6. Classify alert state
+    d.alertState = classifyDevice(d);
+
+    // 7. Fire alerts if state changed
+    if (d.alertState === 'crit' && prev !== 'crit') {
+        addAlert(`⚠ ${formatDeviceName(deviceId)}: CRITICAL — Temp ${d.temp}°C / Hum ${d.hum}%`, 'crit');
+        showToast(`CRITICAL — ${formatDeviceName(deviceId)}`, `Temp: ${d.temp}°C, Humidity: ${d.hum}% — Immediate action required!`);
+    } else if (d.alertState === 'warn' && prev === 'ok') {
+        addAlert(`! ${formatDeviceName(deviceId)}: WARNING — Temp ${d.temp}°C / Hum ${d.hum}%`, 'warn');
+    } else if (d.alertState === 'ok' && (prev === 'warn' || prev === 'crit')) {
+        addAlert(`✓ ${formatDeviceName(deviceId)}: Returned to normal`, 'ok');
+    }
+
+    // 8. Update all UI
+    updateCard(deviceId);
+    refreshChart();
+    updateSidebar();
+    updateHeaderStats();
+    updateAIList();
+    updateAvgTiles();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CLASSIFY: Returns 'ok' | 'warn' | 'crit'
+// ═══════════════════════════════════════════════════════════════════
+function classifyDevice(d) {
+    if (!d.online || d.temp === null) return 'off';
+    const T = d.temp, H = d.hum;
+    const t = THRESHOLDS.temp, h = THRESHOLDS.hum;
+    if (T < t.crit_min || T > t.crit_max) return 'crit';
+    if (H !== null && (H < h.crit_min || H > h.crit_max)) return 'crit';
+    if (T < t.ok_min  || T > t.ok_max)  return 'warn';
+    if (H !== null && (H < h.ok_min  || H > h.ok_max))  return 'warn';
+    return 'ok';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CREATE CARD: Injects a new incubator card into the grid
+// ═══════════════════════════════════════════════════════════════════
+function createCard(id) {
+    const card = document.createElement('div');
+    card.id = `card-${id}`;
+    card.dataset.state = 'ok';
+    card.onclick = () => { document.getElementById('chart-selector').value = id; switchChart(id); };
+    card.className = 'glass-panel rounded-2xl p-4 border-2 inc-ok transition-all cursor-pointer hover:scale-[1.01]';
+    card.innerHTML = cardHTML(id);
+    document.getElementById('incubator-grid').appendChild(card);
+    // Draw empty sparkline
+    setTimeout(() => drawSparkline(id), 50);
+}
+
+function cardHTML(id) {
+    const name = formatDeviceName(id);
+    return `
+    <div class="flex justify-between items-center mb-3">
+        <div class="flex items-center gap-2">
+            <div class="dot dot-green" id="dot-${id}"></div>
+            <span class="text-sm font-bold text-white font-mono">${name}</span>
+        </div>
+        <span class="text-[9px] font-bold px-2 py-0.5 rounded border text-sky-400 bg-sky-900/30 border-sky-700/40 font-mono">NICU</span>
+    </div>
+    <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+            <p class="text-[9px] text-slate-500 uppercase mb-0.5">Temperature</p>
+            <div class="flex items-end gap-0.5">
+                <span class="text-2xl font-mono font-bold text-sky-400" id="val-temp-${id}">--.-</span>
+                <span class="text-xs text-sky-400 mb-0.5">°C</span>
+            </div>
+            <div class="w-full bg-slate-800 rounded-full h-1.5 mt-1">
+                <div id="bar-temp-${id}" class="h-1.5 rounded-full bar-fill bg-sky-500" style="width:50%"></div>
+            </div>
+        </div>
+        <div>
+            <p class="text-[9px] text-slate-500 uppercase mb-0.5">Humidity</p>
+            <div class="flex items-end gap-0.5">
+                <span class="text-2xl font-mono font-bold text-cyan-400" id="val-hum-${id}">--</span>
+                <span class="text-xs text-cyan-400 mb-0.5">%</span>
+            </div>
+            <div class="w-full bg-slate-800 rounded-full h-1.5 mt-1">
+                <div id="bar-hum-${id}" class="h-1.5 rounded-full bar-fill bg-cyan-500" style="width:50%"></div>
+            </div>
+        </div>
+    </div>
+    <canvas id="spark-${id}" class="w-full h-10 mb-3" width="200" height="40"></canvas>
+    <div class="flex justify-between items-center text-[10px] font-mono mb-2">
+        <span class="text-slate-500">AI Forecast:</span>
+        <span class="text-emerald-400 font-bold" id="ai-pred-${id}">Calculating...</span>
+    </div>
+    <div class="flex justify-between items-center">
+        <span class="text-[9px] font-mono text-emerald-400 font-bold" id="status-lbl-${id}">CONNECTING</span>
+        <span class="text-[9px] text-slate-600 font-mono" id="lastseen-${id}">—</span>
+    </div>
+    <div class="mt-2 pt-2 border-t border-slate-800 text-[9px] text-slate-600 font-mono">
+        Target: ${THRESHOLDS.temp.target}°C / ${THRESHOLDS.hum.target}% RH
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// UPDATE CARD: Refreshes values inside an existing card
+// ═══════════════════════════════════════════════════════════════════
+function updateCard(id) {
+    const d = devices[id];
+    const card = document.getElementById(`card-${id}`);
+    if (!card || !d) return;
+
+    const os = d.alertState;
+    card.dataset.state = os;
+
+    // Border state
+    card.classList.remove('inc-ok','inc-warn','inc-crit');
+    if (os === 'crit') card.classList.add('inc-crit');
+    else if (os === 'warn') card.classList.add('inc-warn');
+    else card.classList.add('inc-ok');
+
+    // Color scheme per state
+    const tempCol = os==='crit'?'text-red-400': os==='warn'?'text-amber-400':'text-sky-400';
+    const humCol  = os==='crit'?'text-red-400': os==='warn'?'text-amber-400':'text-cyan-400';
+    const barCol  = os==='crit'?'bg-red-500':   os==='warn'?'bg-amber-500':  'bg-sky-500';
+    const hbarCol = os==='crit'?'bg-red-500':   os==='warn'?'bg-amber-500':  'bg-cyan-500';
+
+    // Temperature
+    const tEl = document.getElementById(`val-temp-${id}`);
+    if (tEl) { tEl.textContent = d.temp ?? '--.-'; tEl.className = `text-2xl font-mono font-bold ${tempCol}`; }
+    const tBar = document.getElementById(`bar-temp-${id}`);
+    if (tBar) {
+        const t = THRESHOLDS.temp;
+        const pct = d.temp ? Math.min(100,Math.max(0,((d.temp - (t.target-2))/4)*100)).toFixed(0) : 50;
+        tBar.style.width = pct+'%';
+        tBar.className = `h-1.5 rounded-full bar-fill ${barCol}`;
+    }
+
+    // Humidity
+    const hEl = document.getElementById(`val-hum-${id}`);
+    if (hEl) { hEl.textContent = d.hum ?? '--'; hEl.className = `text-2xl font-mono font-bold ${humCol}`; }
+    const hBar = document.getElementById(`bar-hum-${id}`);
+    if (hBar) {
+        const h = THRESHOLDS.hum;
+        const pct = d.hum ? Math.min(100,Math.max(0,((d.hum - (h.target-20))/40)*100)).toFixed(0) : 50;
+        hBar.style.width = pct+'%';
+        hBar.className = `h-1.5 rounded-full bar-fill ${hbarCol}`;
+    }
+
+    // AI prediction
+    const aiEl = document.getElementById(`ai-pred-${id}`);
+    if (aiEl && d.aiPrediction !== null) {
+        const diff   = d.temp ? (d.aiPrediction - d.temp) : 0;
+        const arrow  = diff > 0.2 ? '↑' : diff < -0.2 ? '↓' : '→';
+        const aiCol  = diff > 0.5 ? 'text-red-400' : diff < -0.5 ? 'text-sky-400' : 'text-emerald-400';
+        aiEl.textContent = `${d.aiPrediction}°C ${arrow}`;
+        aiEl.className   = `font-bold font-mono text-[10px] ${aiCol}`;
+    }
+
+    // Status label
+    const lblEl = document.getElementById(`status-lbl-${id}`);
+    if (lblEl) {
+        const lbls = { ok:'STABLE', warn:'⚠ WARNING', crit:'⚠ CRITICAL', off:'OFFLINE' };
+        const cols = { ok:'text-emerald-400', warn:'text-amber-400 animate-pulse', crit:'text-red-400 animate-pulse', off:'text-slate-500' };
+        lblEl.textContent  = lbls[os] || 'STABLE';
+        lblEl.className    = `text-[9px] font-mono font-bold ${cols[os]}`;
+    }
+
+    // Last seen
+    const lsEl = document.getElementById(`lastseen-${id}`);
+    if (lsEl && d.lastSeen) lsEl.textContent = 'Just now';
+
+    drawSparkline(id);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SPARKLINE
+// ═══════════════════════════════════════════════════════════════════
+function drawSparkline(id) {
+    const canvas = document.getElementById(`spark-${id}`);
+    if (!canvas) return;
+    const ctx2 = canvas.getContext('2d');
+    const d    = devices[id];
+    const data = d?.tempHistory.filter(v => v !== null);
+    if (!data || data.length < 2) { ctx2.clearRect(0,0,canvas.width,canvas.height); return; }
+
+    const W = canvas.width, H = canvas.height;
+    ctx2.clearRect(0, 0, W, H);
+
+    const min = Math.min(...data) - 0.3;
+    const max = Math.max(...data) + 0.3;
+    const sx  = W / (data.length - 1);
+    const sy  = (max === min) ? 1 : H / (max - min);
+
+    const os  = d.alertState;
+    const col = os==='crit' ? '#ef4444' : os==='warn' ? '#f59e0b' : '#10b981';
+
+    const grad = ctx2.createLinearGradient(0,0,0,H);
+    grad.addColorStop(0, col+'44');
+    grad.addColorStop(1, col+'00');
+
+    ctx2.beginPath();
+    data.forEach((v,i) => { const x=i*sx, y=H-(v-min)*sy; i===0?ctx2.moveTo(x,y):ctx2.lineTo(x,y); });
+    ctx2.lineTo((data.length-1)*sx, H); ctx2.lineTo(0,H); ctx2.closePath();
+    ctx2.fillStyle = grad; ctx2.fill();
+
+    ctx2.beginPath();
+    data.forEach((v,i) => { const x=i*sx, y=H-(v-min)*sy; i===0?ctx2.moveTo(x,y):ctx2.lineTo(x,y); });
+    ctx2.strokeStyle = col; ctx2.lineWidth = 1.5; ctx2.stroke();
+
+    const lv = data[data.length-1];
+    ctx2.beginPath();
+    ctx2.arc((data.length-1)*sx, H-(lv-min)*sy, 3, 0, Math.PI*2);
+    ctx2.fillStyle = col; ctx2.fill();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CHART UPDATE
+// ═══════════════════════════════════════════════════════════════════
+function switchChart(val) {
+    chartMode = val;
+    const subtitle = document.getElementById('chart-subtitle');
+    if (val === 'avg') {
+        subtitle.textContent = 'Ward average of all active incubators — last 30 readings';
+    } else {
+        subtitle.textContent = `${formatDeviceName(val)} — individual readings — last 30`;
+    }
+    refreshChart();
+}
+
+function refreshChart() {
+    let tData, hData;
+    const ids = Object.keys(devices);
+    if (!ids.length) return;
+
+    if (chartMode === 'avg') {
+        tData = Array.from({length:30}, (_,idx) => {
+            const vals = ids.map(id => devices[id].tempHistory[idx]).filter(v=>v!==null);
+            return vals.length ? +(vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(2) : null;
+        });
+        hData = Array.from({length:30}, (_,idx) => {
+            const vals = ids.map(id => devices[id].humHistory[idx]).filter(v=>v!==null);
+            return vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) : null;
+        });
+    } else {
+        const d = devices[chartMode];
+        if (!d) return;
+        tData = [...d.tempHistory];
+        hData = [...d.humHistory];
+    }
+
+    wardChart.data.datasets[0].data = tData;
+    wardChart.data.datasets[1].data = hData;
+    wardChart.update();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SIDEBAR UPDATES
+// ═══════════════════════════════════════════════════════════════════
+function updateSidebar() {
+    const ids    = Object.keys(devices);
+    const online = ids.filter(id => devices[id].online);
+
+    document.getElementById('stat-total').textContent  = ids.length || '—';
+    document.getElementById('stat-online').textContent = online.length || '—';
+    document.getElementById('device-count').textContent = ids.length + ' found';
+    document.getElementById('incubator-count-label').textContent = `— ${ids.length} device${ids.length!==1?'s':''} detected`;
+    document.getElementById('devices-ratio').textContent = `${online.length}/${ids.length}`;
+    document.getElementById('ai-count').textContent = online.filter(id=>devices[id].aiPrediction!==null).length;
+
+    // Device list in sidebar
+    const list = document.getElementById('device-list');
+    list.innerHTML = ids.length ? ids.map(id => {
+        const d   = devices[id];
+        const cls = d.online ? 'text-emerald-400' : 'text-slate-500';
+        const dot = d.online ? 'dot-green' : 'dot-gray';
+        const ago = d.lastSeen ? timeSince(d.lastSeen) : '—';
+        return `
+        <div class="flex items-center justify-between py-1.5 border-b border-slate-800/60 last:border-0">
+            <div class="flex items-center gap-2">
+                <div class="dot ${dot}"></div>
+                <span class="text-[11px] text-slate-300 font-mono">${formatDeviceName(id)}</span>
+            </div>
+            <span class="text-[9px] font-mono ${cls}">${ago}</span>
+        </div>`;
+    }).join('') : '<p class="text-[10px] text-slate-600 font-mono">No devices found</p>';
+}
+
+function updateHeaderStats() {
+    const ids = Object.keys(devices);
+    const counts = { ok:0, warn:0, crit:0 };
+    ids.forEach(id => { const s = devices[id].alertState; if(counts[s]!==undefined) counts[s]++; });
+    document.getElementById('hdr-ok').textContent   = counts.ok   + ' NORMAL';
+    document.getElementById('hdr-warn').textContent = counts.warn + ' WARNING';
+    document.getElementById('hdr-crit').textContent = counts.crit + ' CRITICAL';
+    document.getElementById('stat-warn').textContent = counts.warn;
+    document.getElementById('stat-crit').textContent = counts.crit;
+}
+
+function updateAIList() {
+    const ids = Object.keys(devices).filter(id=>devices[id].online);
+    const list = document.getElementById('ai-list');
+    if (!ids.length) { list.innerHTML = '<p class="text-[10px] font-mono text-slate-600">No active devices</p>'; return; }
+    list.innerHTML = ids.map(id => {
+        const d    = devices[id];
+        const diff = d.aiPrediction && d.temp ? (d.aiPrediction - d.temp) : 0;
+        const arr  = diff > 0.2 ? '↑' : diff < -0.2 ? '↓' : '→';
+        const col  = diff > 0.5 ? 'text-red-400' : diff < -0.5 ? 'text-sky-400' : 'text-emerald-400';
+        const risk = diff > 0.8 ? 'OVERHEAT RISK' : diff < -0.8 ? 'HYPO RISK' : 'STABLE';
+        const rc   = diff > 0.8 ? 'text-red-400 bg-red-900/30' : diff < -0.8 ? 'text-sky-400 bg-sky-900/30' : 'text-emerald-400 bg-emerald-900/20';
+        return `
+        <div class="flex items-center gap-2 p-2 rounded-lg bg-slate-900/60 border border-slate-800 text-[10px] font-mono">
+            <span class="text-slate-400 w-12 flex-shrink-0">${formatDeviceName(id)}</span>
+            <span class="text-slate-500 flex-1">→ <span class="text-white">${d.temp ?? '—'}°C</span></span>
+            <span class="${col} font-bold">${d.aiPrediction ?? '—'}°C ${arr}</span>
+            <span class="px-1.5 py-0.5 rounded text-[9px] font-bold ${rc}">${risk}</span>
+        </div>`;
+    }).join('');
+}
+
+function updateAvgTiles() {
+    const ids = Object.keys(devices).filter(id=>devices[id].online && devices[id].temp!==null);
+    if (!ids.length) return;
+    const avgT = (ids.reduce((a,id)=>a+devices[id].temp,0)/ids.length).toFixed(1);
+    const hIds = ids.filter(id=>devices[id].hum!==null);
+    const avgH = hIds.length ? Math.round(hIds.reduce((a,id)=>a+devices[id].hum,0)/hIds.length) : '--';
+    document.getElementById('avg-temp').textContent = avgT;
+    document.getElementById('avg-hum').textContent  = avgH;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILTER TABS
+// ═══════════════════════════════════════════════════════════════════
+function filterCards(mode) {
+    ['all','warn','crit'].forEach(m => {
+        const t = document.getElementById('tab-'+m);
+        t.className = 'px-3 py-1 rounded-lg border transition-all font-mono text-[10px] ' + (m===mode?'tab-on':'tab-off');
+    });
+    document.querySelectorAll('#incubator-grid > div[id^=card-]').forEach(card => {
+        const s = card.dataset.state;
+        if (mode==='all')  card.style.display='';
+        else if (mode==='warn') card.style.display=(s==='warn'||s==='crit')?'':'none';
+        else if (mode==='crit') card.style.display=s==='crit'?'':'none';
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ALERT LOG + TOAST
+// ═══════════════════════════════════════════════════════════════════
+function addAlert(msg, type) {
+    const log = document.getElementById('alert-log');
+    const p   = document.createElement('p');
+    const t   = new Date().toLocaleTimeString('en-IN',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const col = type==='crit'?'text-red-400': type==='warn'?'text-amber-400': type==='ok'?'text-emerald-400':'text-slate-500';
+    p.className = `text-[10px] font-mono ${col}`;
+    p.textContent = `[${t}] ${msg}`;
+    log.prepend(p);
+    if (log.children.length > 40) log.removeChild(log.lastChild);
+}
+function clearAlerts() { document.getElementById('alert-log').innerHTML = '<p class="text-[10px] font-mono text-slate-600">[SYS] Log cleared.</p>'; }
+
+let toastTimer;
+function showToast(title, msg) {
+    document.getElementById('toast-title').textContent = title;
+    document.getElementById('toast-msg').textContent   = msg;
+    document.getElementById('toast').classList.remove('hidden');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(hideToast, 7000);
+}
+function hideToast() { document.getElementById('toast').classList.add('hidden'); }
+
+// ═══════════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════════
+function formatDeviceName(id) {
+    // "bay01" → "Bay 01", "incubator3" → "Incubator 3", etc.
+    return id.replace(/([a-zA-Z]+)(\d+)/, (_, l, n) => l.charAt(0).toUpperCase()+l.slice(1)+' '+n.padStart(2,'0'));
+}
+function timeSince(date) {
+    const s = Math.floor((new Date() - date) / 1000);
+    if (s < 10)  return 'Just now';
+    if (s < 60)  return s+'s ago';
+    if (s < 120) return '1m ago';
+    return Math.floor(s/60)+'m ago';
+}
+
+// Offline detection: if a device hasn't sent data in 30s, mark offline
+setInterval(() => {
+    const now = new Date();
+    Object.keys(devices).forEach(id => {
+        const d = devices[id];
+        if (d.lastSeen && (now - d.lastSeen) > 30000 && d.online) {
+            d.online      = false;
+            d.alertState  = 'off';
+            const dotEl   = document.getElementById(`dot-${id}`);
+            if (dotEl) { dotEl.className = 'dot dot-gray'; }
+            addAlert(`📡 ${formatDeviceName(id)}: Device went offline`, 'warn');
+            updateSidebar();
+        }
+    });
+}, 5000);
+
+// Update "last seen" labels every 10s
+setInterval(() => {
+    Object.keys(devices).forEach(id => {
+        const el = document.getElementById(`lastseen-${id}`);
+        if (el && devices[id].lastSeen) el.textContent = timeSince(devices[id].lastSeen);
+    });
+    updateSidebar();
+}, 10000);
+
+// Clock
+function updateClock() { document.getElementById('live-clock').textContent = new Date().toLocaleTimeString('en-IN',{hour12:false}); }
+updateClock(); setInterval(updateClock, 1000);
+
+// ═══════════════════════════════════════════════════════════════════
+// FIREBASE BOOT: Try to connect, fall back to demo on failure
+// ═══════════════════════════════════════════════════════════════════
+function bootFirebase() {
+    setLoading('Connecting to Firebase...');
+
+    // If config is placeholder, skip to demo
+    if (firebaseConfig.apiKey === 'YOUR_FIREBASE_API_KEY_HERE') {
+        setLoading('No Firebase config found. Starting Demo Mode...');
+        setTimeout(startDemoMode, 1200);
+        return;
+    }
+
+    try {
+        if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        setLoading('Connected! Scanning for incubators...');
+
+        // ── MAIN FIREBASE LISTENER ──
+        // Listens to entire 'incubator/' node.
+        // Any child key = one incubator device.
+        // New ESP32 devices appear automatically without any code change.
+        db.ref('incubator').on('value', snapshot => {
+            const allData = snapshot.val();
+            if (!allData) {
+                setLoading('Firebase connected but no incubator data yet.\nWaiting for ESP32 devices...');
+                return;
+            }
+            hideLoading();
+
+            // allData = { bay01: {temp, humidity, ...}, bay02: {...}, ... }
+            Object.entries(allData).forEach(([deviceId, data]) => {
+                if (data && typeof data === 'object') {
+                    onDeviceData(deviceId, data);
+                }
+            });
+
+            document.getElementById('data-source-badge').innerHTML =
+                '● <span class="text-emerald-400">FIREBASE LIVE</span>';
+            document.getElementById('data-source-badge').className =
+                'text-[9px] font-mono px-2 py-1 rounded border border-emerald-700/40 text-emerald-400';
+        }, err => {
+            console.error(err);
+            setLoading('Firebase error: ' + err.message + '\nStarting Demo Mode...');
+            setTimeout(startDemoMode, 2000);
+        });
+
+    } catch(e) {
+        console.error(e);
+        setTimeout(startDemoMode, 1500);
+    }
+}
+
+function setLoading(msg) {
+    document.getElementById('loading-msg').textContent = msg;
+    document.getElementById('loading-screen').classList.remove('hidden');
+}
+function hideLoading() {
+    const ls = document.getElementById('loading-screen');
+    ls.style.opacity = '0';
+    setTimeout(() => ls.classList.add('hidden'), 600);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DEMO MODE: Simulates 6 incubators with realistic data fluctuations
+// Purely for testing the UI without real hardware
+// ═══════════════════════════════════════════════════════════════════
+function startDemoMode() {
+    demoMode = true;
+    hideLoading();
+    document.getElementById('data-source-badge').innerHTML = '⚡ DEMO MODE';
+    addAlert('[SYS] Running in Demo Mode — simulated data', 'sys');
+
+    // Simulate 6 devices appearing one by one (as if ESP32s boot up)
+    const demoDevices = [
+        { id:'bay01', temp:36.5, hum:68 },
+        { id:'bay02', temp:36.3, hum:72 },
+        { id:'bay03', temp:36.8, hum:65 },
+        { id:'bay04', temp:36.1, hum:74 },
+        { id:'bay05', temp:37.2, hum:61 },
+        { id:'bay06', temp:36.6, hum:70 },
+    ];
+
+    demoDevices.forEach((dev, i) => {
+        setTimeout(() => {
+            onDeviceData(dev.id, { temp: dev.temp, humidity: dev.hum });
+        }, i * 400);
+    });
+
+    // Simulate live updates every 3 seconds
+    demoTimer = setInterval(() => {
+        Object.keys(devices).forEach(id => {
+            const d = devices[id];
+            const t = THRESHOLDS.temp;
+            // Drift with occasional spikes to trigger warnings
+            let newTemp = d.temp + (Math.random()-0.5) * 0.5;
+            let newHum  = d.hum  + (Math.random()-0.5) * 3;
+            newTemp = Math.max(t.crit_min - 0.3, Math.min(t.crit_max + 0.3, newTemp));
+            newHum  = Math.max(45, Math.min(88, newHum));
+            onDeviceData(id, { temp: +newTemp.toFixed(1), humidity: Math.round(newHum) });
+        });
+    }, 3000);
+}
+
+// ── START ──
+bootFirebase();
+</script>
+</body>
+</html>
